@@ -5,10 +5,12 @@ import {
   logShowProjectCommand,
   E2EWebServerDetails,
   type PackageJson,
+  acknowledgeBuildScripts,
 } from '@nx/devkit/internal';
 import {
   addDependenciesToPackageJson,
   addProjectConfiguration,
+  detectPackageManager,
   ensurePackage,
   formatFiles,
   generateFiles,
@@ -631,6 +633,11 @@ export async function applicationGeneratorInternal(host: Tree, schema: Schema) {
         },
         target: 'es2016',
       },
+    });
+    // @swc/core's postinstall only installs a wasm fallback for platforms not
+    // covered by its prebuilt optional dependencies, so skip it.
+    acknowledgeBuildScripts(host, detectPackageManager(host.root), {
+      '@swc/core': false,
     });
     const installTask = addDependenciesToPackageJson(
       host,
