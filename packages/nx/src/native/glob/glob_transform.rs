@@ -120,6 +120,7 @@ fn build_segment(
 }
 
 fn unique_marker(glob: &str, base: &str) -> String {
+    // Keep the marker distinct so restoring it cannot rewrite a real folder name.
     let mut marker = base.to_string();
     while glob.contains(&marker) {
         marker.push('_');
@@ -128,17 +129,12 @@ fn unique_marker(glob: &str, base: &str) -> String {
 }
 
 fn contains_static_prefix_terminating_pattern(segment: &str) -> bool {
-    segment.contains('!')
-        || segment.contains('?')
-        || segment.contains('*')
-        || segment.contains('|')
-        || segment.contains(',')
-        || segment.contains('{')
-        || segment.contains('}')
-        || segment.contains('[')
-        || segment.contains(']')
-        || segment.contains('(')
-        || segment.contains(')')
+    segment.chars().any(|c| {
+        matches!(
+            c,
+            '!' | '?' | '*' | '|' | ',' | '{' | '}' | '[' | ']' | '(' | ')'
+        )
+    })
 }
 
 fn protect_literal_extglob_prefixes(glob: &str) -> (String, String, String) {
