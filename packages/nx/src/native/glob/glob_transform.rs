@@ -119,16 +119,36 @@ fn build_segment(
     }
 }
 
+fn protect_literal_at(glob: &str) -> (String, String) {
+    let mut marker = "__NX_LITERAL_AT__".to_string();
+    while glob.contains(&marker) {
+        marker.push('_');
+    }
+
+    let mut protected = String::with_capacity(glob.len());
+    let mut chars = glob.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '@' && chars.peek() != Some(&'(') {
+            protected.push_str(&marker);
+        } else {
+            protected.push(c);
+        }
+    }
+
+    (protected, marker)
+}
+
 pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
-    let (negated, groups) = parse_glob(glob)?;
+    let (protected_glob, literal_at_marker) = protect_literal_at(glob);
+    let (negated, groups) = parse_glob(&protected_glob)?;
     // Partition glob into leading directories and patterns that should be matched
     let mut has_patterns = false;
     let (leading_dir_segments, pattern_segments): (Vec<String>, _) = groups
         .into_iter()
         .filter(|group| !group.is_empty())
-        .partition_map(|group| match &group[0] {
-            GlobGroup::NonSpecial(value) if !contains_glob_pattern(&value) && !has_patterns => {
-                Left(value.to_string())
+        .partition_map(|group| match group.as_slice() {
+            [GlobGroup::NonSpecial(value)] if !contains_glob_pattern(value) && !has_patterns => {
+                Left(value.replace(&literal_at_marker, "@"))
             }
             _ => {
                 has_patterns = true;
@@ -138,7 +158,10 @@ pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
 
     Ok((
         leading_dir_segments.join("/"),
-        convert_glob_segments(negated, pattern_segments),
+        convert_glob_segments(negated, pattern_segments)
+            .into_iter()
+            .map(|pattern| pattern.replace(&literal_at_marker, "@"))
+            .collect(),
     ))
 }
 
@@ -296,6 +319,24 @@ mod test {
         let (leading_dirs, globs) = super::partition_glob("dist/app/").unwrap();
         assert_eq!(leading_dirs, "dist/app");
         assert_eq!(globs, [] as [String; 0]);
+    }
+
+    #[test]
+    fn should_partition_scoped_output_glob() {
+        let (leading_dirs, globs) =
+            super::partition_glob("packages/@acme/producer/dist/**/*.d.ts").unwrap();
+        assert_eq!(leading_dirs, "packages/@acme/producer/dist");
+        assert_eq!(globs, ["**/*.d.ts"]);
+
+        let (leading_dirs, globs) =
+            super::partition_glob("packages/@(acme|other)/dist/**/*.d.ts").unwrap();
+        assert_eq!(leading_dirs, "packages");
+        assert_eq!(globs, ["{acme,other}/dist/**/*.d.ts"]);
+
+        let (leading_dirs, globs) =
+            super::partition_glob("packages/@scope-@(producer|consumer)/dist/**/*.d.ts").unwrap();
+        assert_eq!(leading_dirs, "packages");
+        assert_eq!(globs, ["@scope-{producer,consumer}/dist/**/*.d.ts"]);
     }
 
     #[test]
