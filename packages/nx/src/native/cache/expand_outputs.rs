@@ -537,6 +537,19 @@ mod test {
     }
 
     #[test]
+    fn should_get_files_for_output_glob_with_literal_plus() {
+        let temp = TempDir::new().unwrap();
+        temp.child("packages/a+b/producer/dist/index.d.ts")
+            .touch()
+            .unwrap();
+
+        let entries = vec!["packages/a+b/producer/dist/**/*.d.ts".to_string()];
+        let result = get_files_for_outputs(temp.path(), entries).unwrap();
+
+        assert_eq!(result, ["packages/a+b/producer/dist/index.d.ts"]);
+    }
+
+    #[test]
     #[cfg(unix)]
     fn should_expand_outputs_with_symlinks_and_globs() {
         // Reproduces https://github.com/nrwl/nx/issues/34013
