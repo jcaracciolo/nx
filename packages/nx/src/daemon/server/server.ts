@@ -1,5 +1,4 @@
 import { chmodSync, existsSync } from 'fs';
-import { serialize } from 'v8';
 import { isPermissionDenied } from '../../utils/permission-errors';
 import { SOCKET_REFUSED_EXIT_CODE } from '../../utils/socket-refused-exit-code';
 import { createServer, Server, Socket } from 'net';
@@ -98,6 +97,7 @@ import {
   getFullOsSocketPath,
   isWindows,
   killSocketOrPath,
+  serializeWithFallback,
 } from '../socket-utils';
 import { registerFileChangeListener } from './file-watching/file-change-events';
 import { routeWorkspaceChanges } from './file-watching/route-workspace-changes';
@@ -525,7 +525,7 @@ export async function handleResult(
     const response =
       typeof hr.response === 'string'
         ? Buffer.from(hr.response, 'utf8')
-        : serializeUnserializedResult(hr.response, mode);
+        : serializeWithFallback(hr.response, mode);
     serverLogger.log(`Responding to ${type} message`);
     await respondToClient(socket, response, hr.description);
   }
@@ -835,15 +835,4 @@ function forwardEnvToPluginWorkers(env: Record<string, string>) {
     .catch(() => {
       // Plugins may not be loaded yet — env will be picked up on next load
     });
-}
-
-function serializeUnserializedResult(
-  response: boolean | object,
-  mode: 'json' | 'v8'
-): Buffer {
-  if (mode === 'json') {
-    return Buffer.from(JSON.stringify(response), 'utf8');
-  } else {
-    return serialize(response);
-  }
 }
