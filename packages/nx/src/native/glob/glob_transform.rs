@@ -137,7 +137,7 @@ fn contains_static_prefix_terminating_pattern(segment: &str) -> bool {
     })
 }
 
-fn protect_literal_extglob_prefixes(glob: &str) -> (String, String, String) {
+fn protect_literal_extglob_prefixes(glob: &str) -> (String, impl Fn(String) -> String) {
     let literal_at_marker = unique_marker(glob, "__NX_LITERAL_AT__");
     let literal_plus_marker = unique_marker(glob, "__NX_LITERAL_PLUS__");
     let (negation, glob) = match glob.strip_prefix('!') {
@@ -168,12 +168,17 @@ fn protect_literal_extglob_prefixes(glob: &str) -> (String, String, String) {
         has_patterns |= segment_has_patterns;
     }
 
-    (protected, literal_at_marker, literal_plus_marker)
+    let restore = move |value: String| {
+        value
+            .replace(&literal_at_marker, "@")
+            .replace(&literal_plus_marker, "+")
+    };
+
+    (protected, restore)
 }
 
 pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
-    let (protected_glob, literal_at_marker, literal_plus_marker) =
-        protect_literal_extglob_prefixes(glob);
+    let (protected_glob, restore) = protect_literal_extglob_prefixes(glob);
     let (negated, groups) = parse_glob(&protected_glob)?;
     // Partition glob into leading directories and patterns that should be matched
     let mut has_patterns = false;
@@ -182,11 +187,7 @@ pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
         .filter(|group| !group.is_empty())
         .partition_map(|group| match group.as_slice() {
             [GlobGroup::NonSpecial(value)] if !contains_glob_pattern(value) && !has_patterns => {
-                Left(
-                    value
-                        .replace(&literal_at_marker, "@")
-                        .replace(&literal_plus_marker, "+"),
-                )
+                Left(value.to_string())
             }
             _ => {
                 has_patterns = true;
@@ -195,14 +196,10 @@ pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
         });
 
     Ok((
-        leading_dir_segments.join("/"),
+        restore(leading_dir_segments.join("/")),
         convert_glob_segments(negated, pattern_segments)
             .into_iter()
-            .map(|pattern| {
-                pattern
-                    .replace(&literal_at_marker, "@")
-                    .replace(&literal_plus_marker, "+")
-            })
+            .map(restore)
             .collect(),
     ))
 }
