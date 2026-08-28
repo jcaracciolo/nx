@@ -146,13 +146,8 @@ pub(crate) fn build_glob_set<S: AsRef<str> + Debug>(globs: &[S]) -> anyhow::Resu
         .iter()
         .flat_map(|s| potential_glob_split(s.as_ref()))
         .map(|glob| {
-            // Decide on the pattern without its negation marker. A leading `!`
-            // marks the whole glob as an exclusion — it is not extglob syntax —
-            // and convert_glob strips bare `@`, `+` and `?` out of anything it
-            // touches (see special_char_with_no_group, which `+spec.ts`-style
-            // patterns rely on). Routing a plain exclusion through it purely
-            // because of that leading `!` silently rewrote `!dist/@scope/pkg`
-            // to `!dist/scope/pkg`, so the exclusion matched nothing.
+            // A leading `!` marks the whole glob as an exclusion, not extglob
+            // syntax, so inspect the pattern without it before converting.
             let pattern = glob.strip_prefix('!').unwrap_or(glob);
             if pattern.contains('!')
                 || pattern.contains('|')
@@ -205,9 +200,6 @@ mod test {
 
     #[test]
     fn should_not_strip_literal_chars_from_plain_negated_globs() {
-        // A leading `!` is not extglob syntax. Routing a plain exclusion
-        // through convert_glob because of it used to eat the `@`/`+`, so the
-        // exclusion matched nothing at all.
         let glob_set = build_glob_set(&["dist/**", "!dist/libs/@scope/pkg/.cache/**"]).unwrap();
         assert!(glob_set.is_match("dist/libs/@scope/pkg/index.js"));
         assert!(!glob_set.is_match("dist/libs/@scope/pkg/.cache/x"));

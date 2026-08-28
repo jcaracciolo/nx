@@ -8,22 +8,13 @@ use nom::sequence::{preceded, terminated};
 use nom::{Finish, IResult};
 use std::borrow::Cow;
 
-/// Consumes special characters if they are not part of a group, otherwise returns an error
-/// Example:
-/// - ?snap -> snap
-/// - +snap -> snap
-/// - @snap -> snap
-///
-fn special_char_with_no_group(input: &str) -> IResult<&str, &str, VerboseError<&str>> {
-    context("special_char_with_no_group", |input| {
-        // check the input if it has ?,+, or @
-        let (alt_input, _) = alt((tag("?"), tag("+"), tag("@")))(input)?;
-        // check the remaining input from the previous parser to see if the next character is (
-        // if it is, then we know that the special character is part of a group, and we can return an Err here
-        let _ = is_not("(")(alt_input)?;
-        // consume the special character and return the rest of the alt input
-        Ok((alt_input, ""))
-    })(input)
+fn bare_extglob_prefix(input: &str) -> IResult<&str, GlobGroup<'_>, VerboseError<&str>> {
+    context(
+        "bare_extglob_prefix",
+        map(alt((tag("?"), tag("+"), tag("@"))), |prefix: &str| {
+            GlobGroup::BareExtglobPrefix(prefix.chars().next().unwrap())
+        }),
+    )(input)
 }
 
 fn simple_group(input: &str) -> IResult<&str, GlobGroup<'_>, VerboseError<&str>> {
@@ -139,14 +130,8 @@ fn parse_segment(input: &str) -> IResult<&str, Vec<GlobGroup<'_>>, VerboseError<
     context(
         "parse_segment",
         many_till(
-            context("glob_group", |input| {
-                // check if the special character is part of a group
-                let group_input = match special_char_with_no_group(input) {
-                    // if there was no (, then we know that the special character is not part of a group, we can return this input
-                    Ok((no_group_input, _)) => no_group_input,
-                    // otherwise, there was a ( after the special character, so we need to parse the original input
-                    Err(_) => input,
-                };
+            context(
+                "glob_group",
                 alt((
                     simple_group,
                     zero_or_more_group,
@@ -157,9 +142,10 @@ fn parse_segment(input: &str) -> IResult<&str, Vec<GlobGroup<'_>>, VerboseError<
                     negated_wildcard,
                     negated_group,
                     brace_group_with_empty_item,
+                    bare_extglob_prefix,
                     non_special_character,
-                ))(group_input)
-            }),
+                )),
+            ),
             eof,
         ),
     )(input)
@@ -199,13 +185,10 @@ pub fn parse_glob(input: &str) -> anyhow::Result<(bool, Vec<Vec<GlobGroup<'_>>>)
 #[cfg(test)]
 mod test {
     use crate::native::glob::glob_group::GlobGroup;
-    use crate::native::glob::glob_parser::{parse_glob, special_char_with_no_group};
+    use crate::native::glob::glob_parser::parse_glob;
 
     #[test]
     fn invalid_groups() {
-        let result = special_char_with_no_group("?snap").unwrap();
-        assert_eq!(result, ("snap", ""));
-        // assert_eq!(result, ("?", "snap"));
         let result = parse_glob("libs/?(*.)+spec.ts?(.snap)").unwrap();
         assert_eq!(
             result,
@@ -215,8 +198,32 @@ mod test {
                     vec![GlobGroup::NonSpecial("libs".into())],
                     vec![
                         GlobGroup::ZeroOrOne("*.".into()),
+                        GlobGroup::BareExtglobPrefix('+'),
                         GlobGroup::NonSpecial("spec.ts".into()),
                         GlobGroup::ZeroOrOne(".snap".into())
+                    ]
+                ]
+            )
+        );
+
+        let result = parse_glob("@scope/a+b/dir?").unwrap();
+        assert_eq!(
+            result,
+            (
+                false,
+                vec![
+                    vec![
+                        GlobGroup::BareExtglobPrefix('@'),
+                        GlobGroup::NonSpecial("scope".into())
+                    ],
+                    vec![
+                        GlobGroup::NonSpecial("a".into()),
+                        GlobGroup::BareExtglobPrefix('+'),
+                        GlobGroup::NonSpecial("b".into())
+                    ],
+                    vec![
+                        GlobGroup::NonSpecial("dir".into()),
+                        GlobGroup::BareExtglobPrefix('?')
                     ]
                 ]
             )

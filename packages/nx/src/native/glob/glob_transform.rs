@@ -15,7 +15,7 @@ fn convert_glob_segments(negated: bool, parsed: Vec<Vec<GlobGroup>>) -> Vec<Stri
     let mut built_segments: Vec<Vec<GlobType>> = Vec::new();
     for (index, glob_segment) in parsed.iter().enumerate() {
         let is_last = index == parsed.len() - 1;
-        built_segments.push(build_segment("", glob_segment, is_last, false));
+        built_segments.push(build_segment("", glob_segment, is_last, false, false));
     }
 
     let mut globs = built_segments
@@ -72,45 +72,68 @@ fn build_segment(
     group: &[GlobGroup],
     is_last_segment: bool,
     is_negative: bool,
+    has_pattern: bool,
 ) -> Vec<GlobType> {
     if let Some(glob_part) = group.iter().next() {
         let built_glob = format!("{}{}", existing, glob_part);
         match glob_part {
             GlobGroup::ZeroOrMore(_) => {
                 let existing = if !is_last_segment { "*" } else { existing };
-                let off_group = build_segment(existing, &group[1..], is_last_segment, is_negative);
+                let off_group =
+                    build_segment(existing, &group[1..], is_last_segment, is_negative, true);
                 let on_group =
-                    build_segment(&built_glob, &group[1..], is_last_segment, is_negative);
+                    build_segment(&built_glob, &group[1..], is_last_segment, is_negative, true);
                 off_group.into_iter().chain(on_group).collect::<Vec<_>>()
             }
             GlobGroup::ZeroOrOne(_) => {
-                let off_group = build_segment(existing, &group[1..], is_last_segment, is_negative);
+                let off_group =
+                    build_segment(existing, &group[1..], is_last_segment, is_negative, true);
                 let on_group =
-                    build_segment(&built_glob, &group[1..], is_last_segment, is_negative);
+                    build_segment(&built_glob, &group[1..], is_last_segment, is_negative, true);
                 off_group.into_iter().chain(on_group).collect::<Vec<_>>()
             }
             GlobGroup::Negated(_) => {
                 let existing = if !is_last_segment { "*" } else { existing };
-                let off_group = build_segment(existing, &group[1..], is_last_segment, is_negative);
-                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true);
+                let off_group =
+                    build_segment(existing, &group[1..], is_last_segment, is_negative, true);
+                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true, true);
                 off_group.into_iter().chain(on_group).collect::<Vec<_>>()
             }
             GlobGroup::NegatedFileName(_) => {
-                let off_group = build_segment("*.", &group[1..], is_last_segment, is_negative);
-                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true);
+                let off_group =
+                    build_segment("*.", &group[1..], is_last_segment, is_negative, true);
+                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true, true);
                 off_group.into_iter().chain(on_group).collect::<Vec<_>>()
             }
             GlobGroup::NegatedWildcard(_) => {
-                let off_group = build_segment("*", &group[1..], is_last_segment, is_negative);
-                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true);
+                let off_group = build_segment("*", &group[1..], is_last_segment, is_negative, true);
+                let on_group = build_segment(&built_glob, &group[1..], is_last_segment, true, true);
                 off_group.into_iter().chain(on_group).collect::<Vec<_>>()
             }
-            GlobGroup::OneOrMore(_)
-            | GlobGroup::ExactOne(_)
-            | GlobGroup::NonSpecial(_)
-            | GlobGroup::NonSpecialGroup(_) => {
-                build_segment(&built_glob, &group[1..], is_last_segment, is_negative)
+            GlobGroup::OneOrMore(_) | GlobGroup::ExactOne(_) | GlobGroup::NonSpecialGroup(_) => {
+                build_segment(&built_glob, &group[1..], is_last_segment, is_negative, true)
             }
+            GlobGroup::BareExtglobPrefix('?') => build_segment(
+                existing,
+                &group[1..],
+                is_last_segment,
+                is_negative,
+                has_pattern,
+            ),
+            GlobGroup::BareExtglobPrefix(_) if has_pattern => build_segment(
+                existing,
+                &group[1..],
+                is_last_segment,
+                is_negative,
+                has_pattern,
+            ),
+            GlobGroup::BareExtglobPrefix(_) | GlobGroup::NonSpecial(_) => build_segment(
+                &built_glob,
+                &group[1..],
+                is_last_segment,
+                is_negative,
+                has_pattern,
+            ),
         }
     } else if is_negative {
         vec![GlobType::Negative(existing.to_string())]
@@ -119,88 +142,40 @@ fn build_segment(
     }
 }
 
-fn unique_marker(glob: &str, base: &str) -> String {
-    // Keep the marker distinct so restoring it cannot rewrite a real folder name.
-    let mut marker = base.to_string();
-    while glob.contains(&marker) {
-        marker.push('_');
-    }
-    marker
-}
-
-fn contains_static_prefix_terminating_pattern(segment: &str) -> bool {
-    segment.chars().any(|c| {
-        matches!(
-            c,
-            '!' | '?' | '*' | '|' | ',' | '{' | '}' | '[' | ']' | '(' | ')'
-        )
-    })
-}
-
-fn protect_literal_extglob_prefixes(glob: &str) -> (String, impl Fn(String) -> String) {
-    let literal_at_marker = unique_marker(glob, "__NX_LITERAL_AT__");
-    let literal_plus_marker = unique_marker(glob, "__NX_LITERAL_PLUS__");
-    let (negation, glob) = match glob.strip_prefix('!') {
-        Some(glob) => ("!", glob),
-        None => ("", glob),
-    };
-
-    let mut protected = String::with_capacity(glob.len());
-    protected.push_str(negation);
-    let mut has_patterns = false;
-    for (index, segment) in glob.split('/').enumerate() {
-        if index > 0 {
-            protected.push('/');
-        }
-
-        let segment_has_patterns = contains_static_prefix_terminating_pattern(segment);
-        let protect_literal_plus = !has_patterns && !segment_has_patterns;
-        let mut chars = segment.chars().peekable();
-        while let Some(c) = chars.next() {
-            if c == '@' && chars.peek() != Some(&'(') {
-                protected.push_str(&literal_at_marker);
-            } else if c == '+' && chars.peek() != Some(&'(') && protect_literal_plus {
-                protected.push_str(&literal_plus_marker);
-            } else {
-                protected.push(c);
+fn static_segment(group: &[GlobGroup]) -> Option<String> {
+    let mut segment = String::new();
+    for glob_part in group {
+        match glob_part {
+            GlobGroup::NonSpecial(value) if !contains_glob_pattern(value) => {
+                segment.push_str(value)
             }
+            GlobGroup::BareExtglobPrefix(prefix @ ('@' | '+')) => segment.push(*prefix),
+            _ => return None,
         }
-        has_patterns |= segment_has_patterns;
     }
-
-    let restore = move |value: String| {
-        value
-            .replace(&literal_at_marker, "@")
-            .replace(&literal_plus_marker, "+")
-    };
-
-    (protected, restore)
+    Some(segment)
 }
 
 pub fn partition_glob(glob: &str) -> anyhow::Result<(String, Vec<String>)> {
-    let (protected_glob, restore) = protect_literal_extglob_prefixes(glob);
-    let (negated, groups) = parse_glob(&protected_glob)?;
+    let (negated, groups) = parse_glob(glob)?;
     // Partition glob into leading directories and patterns that should be matched
     let mut has_patterns = false;
     let (leading_dir_segments, pattern_segments): (Vec<String>, _) = groups
         .into_iter()
         .filter(|group| !group.is_empty())
-        .partition_map(|group| match group.as_slice() {
-            [GlobGroup::NonSpecial(value)] if !contains_glob_pattern(value) && !has_patterns => {
-                Left(value.to_string())
+        .partition_map(|group| {
+            if !has_patterns {
+                if let Some(segment) = static_segment(&group) {
+                    return Left(segment);
+                }
             }
-            _ => {
-                has_patterns = true;
-                Right(group)
-            }
+            has_patterns = true;
+            Right(group)
         });
 
     Ok((
-        restore(leading_dir_segments.join("/")),
-        convert_glob_segments(negated, pattern_segments)
-            .into_iter()
-            .map(restore)
-            .collect(),
+        leading_dir_segments.join("/"),
+        convert_glob_segments(negated, pattern_segments),
     ))
 }
 
@@ -383,7 +358,20 @@ mod test {
         assert_eq!(globs, ["**/*.d.ts"]);
 
         let (leading_dirs, globs) =
+            super::partition_glob("packages/a+b@(producer|consumer)/dist/**/*.d.ts").unwrap();
+        assert_eq!(leading_dirs, "packages");
+        assert_eq!(globs, ["a+b{producer,consumer}/dist/**/*.d.ts"]);
+
+        let (leading_dirs, globs) =
             super::partition_glob("packages/?(*.)+spec.ts?(.snap)").unwrap();
+        assert_eq!(leading_dirs, "packages");
+        assert_eq!(
+            globs,
+            ["*.spec.ts", "*.spec.ts.snap", "spec.ts", "spec.ts.snap"]
+        );
+
+        let (leading_dirs, globs) =
+            super::partition_glob("packages/?(*.)@spec.ts?(.snap)").unwrap();
         assert_eq!(leading_dirs, "packages");
         assert_eq!(
             globs,
